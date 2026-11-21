@@ -10,7 +10,8 @@
 //   if (Feature.for(user).active("new-checkout")) { ... }
 //   let color = Feature.for(user).value("button-color") as string
 //   Feature.activateForEveryone("search-v2")
-//   router.get("/checkout", ...).middleware([new EnsureFeature("new-checkout")])
+//   router.aliasMiddleware("feature", fn(a: Array<string>) -> Middleware { return new EnsureFeature(Str.join(a, ",")) })
+//   router.get("/checkout", ...).middleware(["feature:new-checkout"])
 //
 // Stores: MemoryFeatureStore (one process), DatabaseFeatureStore (grav-db),
 // CacheFeatureStore (any grav-cache store: Redis, files, a database, ...).
