@@ -17,7 +17,8 @@ Feature.define("search-v2", fn(scope: any) -> any { return Rollout.percent(scope
 if (Feature.for(user).active("new-checkout")) { ... }
 let color = Feature.for(user).value("button-color") as string
 Feature.activateForEveryone("search-v2")
-router.get("/checkout", ...).middleware([new EnsureFeature("new-checkout")])
+router.aliasMiddleware("feature", fn(a: Array<string>) -> Middleware { return new EnsureFeature(Str.join(a, ",")) })
+router.get("/checkout", ...).middleware(["feature:new-checkout"])
 ```
 
 ## Checking
@@ -60,7 +61,8 @@ before anything is stored, and each feature splits scopes differently.
 
 ## Routes
 
-`new EnsureFeature("a,b", status = 404)` lets a request through only when the
+`new EnsureFeature("a,b", status = 404)` (registered under a middleware alias,
+as above, so routes name it: `"feature:new-checkout"`) lets a request through only when the
 request's user (or everyone, without one) has every listed feature on;
 otherwise 404, as if the route were not there (or the status given).
 
