@@ -1,0 +1,117 @@
+// apogee-pennant's tests: resolvers decide once and the answer is kept, rich
+// values, activating and deactivating (for a scope and for everyone),
+// forgetting and purging, the same on the memory, database (SQLite) and cache
+// stores; stable percentage rollouts and variants; scopes; the middleware.
+import "std"
+import "std/net"
+import "apogee-http"
+import "grav-db"
+import "grav-cache"
+import "../src/pennant.grav"
+use apogee.*
+use db.*
+use cache.*
+
+class User { public id: int  public beta: bool  constructor(id: int, beta: bool) { self.id = id; self.beta = beta } }
+class Team implements FeatureScope { public slug: string  constructor(s: string) { self.slug = s }  fn featureScopeId() -> string { return "team:" + self.slug } }
+
+class Calls { static n: int = 0 }
+class Plain { constructor() {} }
+
+fn exercise(store: FeatureStore) {
+    let f = new Features(store)
+    Calls.n = 0
+    f.define("new-checkout", fn(scope: any) -> any { Calls.n += 1; return scope != null && (scope as User).beta })
+    f.define("button-color", fn(scope: any) -> any { return "blue" })
+    let ada = new User(1, true)
+    let bo = new User(2, false)
+    assert(f.forScope(ada).active("new-checkout"))
+    assert(f.forScope(bo).inactive("new-checkout"))
+    assert(f.forScope(ada).active("new-checkout"))
+    assertEq(Calls.n, 2)                                    // resolved once per scope, then stored
+    assertEq(f.forScope(ada).value("button-color") as string, "blue")
+    f.forScope(bo).activate("button-color", "green")
+    assertEq(f.forScope(bo).value("button-color") as string, "green")
+    f.forScope(bo).activate("new-checkout")
+    assert(f.forScope(bo).active("new-checkout"))
+    f.forScope(ada).deactivate("new-checkout")
+    assert(f.forScope(ada).inactive("new-checkout"))
+    f.forScope(ada).forget("new-checkout")
+    assert(f.forScope(ada).active("new-checkout"))            // decided again
+    assertEq(Calls.n, 3)
+    assert(f.forScope(ada).allAreActive(["new-checkout", "button-color"]))
+    assert(f.forScope(new User(3, false)).someAreActive(["new-checkout", "button-color"]))
+    f.deactivateForEveryone("new-checkout")
+    assert(f.forScope(ada).inactive("new-checkout") && f.forScope(bo).inactive("new-checkout"))
+    assert(f.forScope(null).inactive("new-checkout"))
+    f.activateForEveryone("button-color", "red")
+    assertEq(f.forScope(ada).value("button-color") as string, "red")
+    assertEq(f.forScope(new Team("core")).value("button-color") as string, "blue")   // a new scope still resolves
+    let seen = ""
+    f.forScope(ada).when("button-color", fn(v: any) { seen = v as string }, fn() { seen = "off" })
+    assertEq(seen, "red")
+    assert(f.forScope(ada).inactive("never-defined"))
+    assertEq(Str.join(store.stored(), ","), "button-color,new-checkout")
+    f.purge("new-checkout")
+    assertEq(Str.join(store.stored(), ","), "button-color")
+    f.purge()
+    assertEq(store.stored().size(), 0)
+    f.forScope(ada).activate("count", 42)
+    assertEq(f.forScope(ada).value("count") as long, 42 as long)
+}
+
+test "the memory store" { exercise(new MemoryFeatureStore()) }
+
+test "the database store (SQLite)" {
+    let file = Dir.temp() + "/pennant_test_" + str(Process.pid()) + ".sqlite"
+    new File(file).delete()
+    let store = new DatabaseFeatureStore(new Pool(2, fn() -> Connection { return Sqlite.open(file) }))
+    store.createTable()
+    store.createTable()
+    exercise(store)
+    new File(file).delete()
+}
+
+test "a cache store (any grav-cache store)" { exercise(new CacheFeatureStore(new MemoryCacheStore())) }
+
+test "rollouts are stable, and split close to the share asked for" {
+    let on = 0
+    for (i in 0..10000) { if (Rollout.percent(new User(i, false), "search-v2", 25)) { on += 1 } }
+    assert(on > 2300 && on < 2700)
+    assertEq(Rollout.percent(new User(77, false), "search-v2", 25), Rollout.percent(new User(77, false), "search-v2", 25))
+    let colors: Array<string> = ["blue", "green", "orange"]
+    let counts = new HashMap<string, int>()
+    for (i in 0..3000) { let c = Rollout.pick(i as long, "color", colors); counts.put(c, counts.getOr(c, 0) + 1) }
+    for (c in colors) { assert(counts.get(c) > 850 && counts.get(c) < 1150) }
+    assert(Rollout.percent("anyone", "x", 100))
+    assert(!Rollout.percent("anyone", "x", 0))
+}
+
+test "scopes" {
+    reflect(User)
+    assertEq(Features.scopeKey(null), "")
+    assertEq(Features.scopeKey("org-7"), "org-7")
+    assertEq(Features.scopeKey(5 as long), "5")
+    assertEq(Features.scopeKey(new Team("core")), "team:core")
+    assert(Str.endsWith(Features.scopeKey(new User(9, false)), "|9"))
+    let refused = false
+    try { Features.scopeKey(new Plain()) } catch (e: ValueError) { refused = true }
+    assert(refused)
+}
+
+test "the facade and the middleware" {
+    Feature.useStore(new MemoryFeatureStore())
+    Feature.define("beta-page", fn(scope: any) -> any { return scope != null && (scope as User).beta })
+    Feature.activate("global-banner")
+    assert(Feature.active("global-banner"))
+    let mw = new EnsureFeature("beta-page")
+    let ok = fn(req: Request) -> Response { return Response.text("page") }
+    let req = new Request(new HttpRequest("GET", "/beta", "HTTP/1.1"))
+    req.user = new User(1, true)
+    assertEq(mw.handle(req, ok).http.status, 200)
+    let other = new Request(new HttpRequest("GET", "/beta", "HTTP/1.1"))
+    other.user = new User(2, false)
+    assertEq(mw.handle(other, ok).http.status, 404)
+    assertEq(new EnsureFeature("beta-page", 403).handle(other, ok).http.status, 403)
+    assertEq(Str.join(Feature.defined(), ","), "beta-page")
+}
