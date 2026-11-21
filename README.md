@@ -59,6 +59,14 @@ before anything is stored, and each feature splits scopes differently.
 
 `Feature.useStore(store)` picks one; `Features` is the manager behind the facade.
 
+A value read or resolved is kept in the process for `cacheMs` (1000 by
+default), so checking a flag again within that time asks the store nothing: a
+check costs a map lookup rather than a query. Changes made through Pennant
+(`activate`, `deactivate`, `forget`, `activateForEveryone`, `purge`) show at
+once; changes made by another process show within `cacheMs`.
+`Feature.instance().cacheMs = 0` asks the store every time, and
+`Feature.flushCache()` forgets what is kept.
+
 ## Routes
 
 `new EnsureFeature("a,b", status = 404)` (registered under a middleware alias,
