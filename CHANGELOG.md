@@ -6,6 +6,11 @@ compiler versions it builds with.
 
 ## Unreleased
 
+- Values read or resolved are kept in the process for `cacheMs` (1 s by
+  default): a repeated check asks the store nothing (about 50 times faster on
+  SQLite, more over a network). Changes made through Pennant show at once;
+  `Feature.flushCache()`.
+
 ## 0.1.0 (2026-11-21)
 
 The first release. Needs grav 1.10.1 or newer.
