@@ -1,0 +1,391 @@
+// pennant.grav — feature flags for Apogee apps: whether a feature is on, for
+// whom, and with which value. A feature is defined by a resolver that decides
+// for a scope (a user, a team, everyone) the first time it is asked; the
+// answer is stored, so it stays the same until it is changed on purpose.
+//
+//   Feature.define("new-checkout", fn(scope: any) -> any { return (scope as User).isBeta })
+//   Feature.define("button-color", fn(scope: any) -> any { return Rollout.pick(scope, "button-color", ["blue", "green"]) })
+//   Feature.define("search-v2", fn(scope: any) -> any { return Rollout.percent(scope, "search-v2", 25) })
+//
+//   if (Feature.for(user).active("new-checkout")) { ... }
+//   let color = Feature.for(user).value("button-color") as string
+//   Feature.activateForEveryone("search-v2")
+//   router.get("/checkout", ...).middleware([new EnsureFeature("new-checkout")])
+//
+// Stores: MemoryFeatureStore (one process), DatabaseFeatureStore (grav-db),
+// CacheFeatureStore (any grav-cache store: Redis, files, a database, ...).
+import "std"
+import "grav-db"
+import "grav-cache"
+import "apogee-http"
+use db.*
+use cache.*
+
+namespace apogee {
+
+    // A scope that names itself (a model: its class and id).
+    interface FeatureScope {
+        fn featureScopeId() -> string
+    }
+
+    // Where resolved values are kept: one per feature and scope ("" scope for everyone).
+    interface FeatureStore {
+        // The stored value as JSON text, or null when there is none.
+        fn get(feature: string, scope: string) -> string?
+        fn set(feature: string, scope: string, valueJson: string)
+        // Sets it for every scope already stored for the feature.
+        fn setForAll(feature: string, valueJson: string)
+        fn delete(feature: string, scope: string)
+        // Forgets the feature entirely (every scope); "" for every feature.
+        fn purge(feature: string)
+        // The features with a stored value.
+        fn stored() -> Array<string>
+    }
+
+    // In this process's memory. Thread-safe.
+    class MemoryFeatureStore implements FeatureStore {
+        private values: HashMap<string, HashMap<string, string>> = new HashMap<string, HashMap<string, string>>()
+        private lock: Mutex = new Mutex()
+        fn get(feature: string, scope: string) -> string? {
+            self.lock.lock();
+            let m = self.values.getOr(feature, null);
+            let has = m != null && m.containsKey(scope);
+            let v = has ? m.get(scope) : "";
+            self.lock.unlock();
+            return has ? v : null;
+        }
+        fn set(feature: string, scope: string, valueJson: string) {
+            self.lock.lock();
+            let m = self.values.getOr(feature, null);
+            if (m == null) { m = new HashMap<string, string>(); self.values.put(feature, m); }
+            m.put(scope, valueJson);
+            self.lock.unlock();
+        }
+        fn setForAll(feature: string, valueJson: string) {
+            self.lock.lock();
+            let m = self.values.getOr(feature, null);
+            if (m != null) { for (k in m.keys()) { m.put(k, valueJson); } }
+            self.lock.unlock();
+        }
+        fn delete(feature: string, scope: string) {
+            self.lock.lock();
+            let m = self.values.getOr(feature, null);
+            if (m != null) { m.remove(scope); }
+            self.lock.unlock();
+        }
+        fn purge(feature: string) {
+            self.lock.lock();
+            if (feature == "") { self.values.clear(); } else { self.values.remove(feature); }
+            self.lock.unlock();
+        }
+        fn stored() -> Array<string> {
+            self.lock.lock();
+            let out = self.values.keys();
+            self.lock.unlock();
+            out.sortBy(fn(a, b) => Str.compare(a, b));
+            return out;
+        }
+    }
+
+    // In a database table (SQLite, MySQL, PostgreSQL), shared by every process.
+    class DatabaseFeatureStore implements FeatureStore {
+        public table: string
+        private pool: Pool
+        constructor(pool: Pool, table: string = "features") { self.pool = pool; self.table = table; }
+        private fn with(f: fn(Connection)) {
+            let c = self.pool.acquire();
+            try { f(c); } finally { self.pool.release(c); }
+        }
+        // Makes the table (nothing if it is there).
+        fn createTable() {
+            self.with(fn(c: Connection) {
+                let text = c.driver() == "mysql" ? "LONGTEXT" : "TEXT";
+                c.exec("CREATE TABLE IF NOT EXISTS " + self.table + " (name VARCHAR(191) NOT NULL, scope VARCHAR(191) NOT NULL, value " + text +
+                       " NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (name, scope))");
+            });
+        }
+        fn get(feature: string, scope: string) -> string? {
+            let out = "";
+            let found = false;
+            self.with(fn(c: Connection) {
+                let row = c.queryOne("SELECT value FROM " + self.table + " WHERE name = ? AND scope = ?", [feature, scope]);
+                if (row != null) { found = true; out = row.getString("value"); }
+            });
+            return found ? out : null;
+        }
+        fn set(feature: string, scope: string, valueJson: string) {
+            self.with(fn(c: Connection) {
+                c.transaction(fn() {
+                    let n = c.execute("UPDATE " + self.table + " SET value = ?, updated_at = ? WHERE name = ? AND scope = ?", [valueJson, Time.now(), feature, scope]);
+                    if (n == 0) { c.execute("INSERT INTO " + self.table + " (name, scope, value, updated_at) VALUES (?, ?, ?, ?)", [feature, scope, valueJson, Time.now()]); }
+                });
+            });
+        }
+        fn setForAll(feature: string, valueJson: string) {
+            self.with(fn(c: Connection) { c.execute("UPDATE " + self.table + " SET value = ?, updated_at = ? WHERE name = ?", [valueJson, Time.now(), feature]); });
+        }
+        fn delete(feature: string, scope: string) {
+            self.with(fn(c: Connection) { c.execute("DELETE FROM " + self.table + " WHERE name = ? AND scope = ?", [feature, scope]); });
+        }
+        fn purge(feature: string) {
+            self.with(fn(c: Connection) {
+                if (feature == "") { c.execute("DELETE FROM " + self.table); }
+                else { c.execute("DELETE FROM " + self.table + " WHERE name = ?", [feature]); }
+            });
+        }
+        fn stored() -> Array<string> {
+            let out = new Array<string>();
+            self.with(fn(c: Connection) { for (row in c.query("SELECT DISTINCT name FROM " + self.table + " ORDER BY name")) { out.push(row.getString("name")); } });
+            return out;
+        }
+    }
+
+    // In a grav-cache store (Redis, files, a database, memory). Each feature
+    // keeps a list of its scopes, so it can be changed for all of them at once.
+    class CacheFeatureStore implements FeatureStore {
+        public prefix: string
+        private store: CacheStore
+        private lock: Mutex = new Mutex()
+        constructor(store: CacheStore, prefix: string = "features:") { self.store = store; self.prefix = prefix; }
+        private fn key(feature: string, scope: string) -> string { return self.prefix + feature + "|" + scope; }
+        private fn scopes(feature: string) -> Array<string> {
+            let raw = self.store.get(self.prefix + "scopes|" + feature);
+            let out = new Array<string>();
+            if (raw == null) { return out; }
+            let j = Json.tryParse(raw);
+            if (j != null && j.isArray()) { for (s in j.asArray()) { out.push(s.asString()); } }
+            return out;
+        }
+        private fn saveScopes(feature: string, scopes: Array<string>) {
+            let a = Json.array();
+            for (s in scopes) { a.push(s); }
+            self.store.forever(self.prefix + "scopes|" + feature, a.toJson());
+            let all = self.features();
+            if (!all.contains(feature)) { all.push(feature); self.saveFeatures(all); }
+        }
+        private fn features() -> Array<string> {
+            let raw = self.store.get(self.prefix + "all");
+            let out = new Array<string>();
+            let j = raw == null ? null : Json.tryParse(raw);
+            if (j != null && j.isArray()) { for (s in j.asArray()) { out.push(s.asString()); } }
+            return out;
+        }
+        private fn saveFeatures(all: Array<string>) {
+            let a = Json.array();
+            for (s in all) { a.push(s); }
+            self.store.forever(self.prefix + "all", a.toJson());
+        }
+        fn get(feature: string, scope: string) -> string? { return self.store.get(self.key(feature, scope)); }
+        fn set(feature: string, scope: string, valueJson: string) {
+            self.lock.lock();
+            self.store.forever(self.key(feature, scope), valueJson);
+            let s = self.scopes(feature);
+            if (!s.contains(scope)) { s.push(scope); self.saveScopes(feature, s); }
+            self.lock.unlock();
+        }
+        fn setForAll(feature: string, valueJson: string) {
+            self.lock.lock();
+            for (s in self.scopes(feature)) { self.store.forever(self.key(feature, s), valueJson); }
+            self.lock.unlock();
+        }
+        fn delete(feature: string, scope: string) {
+            self.lock.lock();
+            self.store.forget(self.key(feature, scope));
+            let s = self.scopes(feature);
+            let i = s.indexOf(scope);
+            if (i >= 0) { s.removeAt(i); self.saveScopes(feature, s); }
+            self.lock.unlock();
+        }
+        fn purge(feature: string) {
+            self.lock.lock();
+            let names = feature == "" ? self.features() : [feature] as Array<string>;
+            for (f in names) {
+                for (s in self.scopes(f)) { self.store.forget(self.key(f, s)); }
+                self.store.forget(self.prefix + "scopes|" + f);
+            }
+            let rest = self.features().filter(fn(f: string) => !names.contains(f));
+            self.saveFeatures(rest);
+            self.lock.unlock();
+        }
+        fn stored() -> Array<string> {
+            let out = self.features();
+            out.sortBy(fn(a, b) => Str.compare(a, b));
+            return out;
+        }
+    }
+
+    // Stable rollouts: a scope always lands on the same side (no store needed to
+    // keep it there), and different features split the same scopes differently.
+    class Rollout {
+        // Whether `scope` is among the `percent` (0-100) that get `feature`.
+        static fn percent(scope: any, feature: string, percent: int) -> bool {
+            return Rollout.bucket(scope, feature, 10000) < percent * 100;
+        }
+        // One of `variants`, the same one each time for `scope` (equal shares).
+        static fn pick(scope: any, feature: string, variants: Array<string>) -> string {
+            return variants[Rollout.bucket(scope, feature, variants.size() as long) as int];
+        }
+        // 0 to n-1, from a hash of the feature and the scope.
+        static fn bucket(scope: any, feature: string, n: long) -> long {
+            let h = Hash.fnv1a(feature + "|" + Features.scopeKey(scope));
+            let m = h % n;
+            return m < 0 ? m + n : m;
+        }
+    }
+
+    // The flags of one scope.
+    class ScopedFeatures {
+        private manager: Features
+        private scope: any
+        private key: string
+        constructor(manager: Features, scope: any) { self.manager = manager; self.scope = scope; self.key = Features.scopeKey(scope); }
+        // The feature's value for this scope (resolved and stored the first time).
+        fn value(feature: string) -> any { return self.manager.valueFor(feature, self.scope, self.key); }
+        // Whether the value is anything but false or null.
+        fn active(feature: string) -> bool { let v = self.value(feature); return !(v == null || (v is bool && !(v as bool))); }
+        fn inactive(feature: string) -> bool { return !self.active(feature); }
+        fn allAreActive(features: Array<string>) -> bool { for (f in features) { if (!self.active(f)) { return false; } } return true; }
+        fn someAreActive(features: Array<string>) -> bool { for (f in features) { if (self.active(f)) { return true; } } return false; }
+        fn allAreInactive(features: Array<string>) -> bool { return !self.someAreActive(features); }
+        // Each feature's value.
+        fn values(features: Array<string>) -> HashMap<string, any> {
+            let out = new HashMap<string, any>();
+            for (f in features) { out.put(f, self.value(f)); }
+            return out;
+        }
+        // Runs `onActive` (with the value) or `onInactive`.
+        fn when(feature: string, onActive: fn(any), onInactive: fn() = null) {
+            let v = self.value(feature);
+            if (!(v == null || (v is bool && !(v as bool)))) { onActive(v); } else if (onInactive != null) { onInactive(); }
+        }
+        fn activate(feature: string, value: any = true) { self.manager.store.set(feature, self.key, FeatureValue.encode(value)); }
+        fn deactivate(feature: string) { self.manager.store.set(feature, self.key, "false"); }
+        // Forgets the stored value: the resolver decides again next time.
+        fn forget(feature: string) { self.manager.store.delete(feature, self.key); }
+    }
+
+    // Values as JSON text: bool, numbers, strings, null.
+    class FeatureValue {
+        static fn encode(v: any) -> string {
+            if (v == null) { return "null"; }
+            if (v is bool) { return (v as bool) ? "true" : "false"; }
+            if (v is long) { return str(v as long); }
+            if (v is int) { return str(v as int); }
+            if (v is float || v is double) { return str(v); }
+            return Json.of(str(v)).toJson();
+        }
+        static fn decode(text: string) -> any {
+            if (text == "true") { return true; }
+            if (text == "false") { return false; }
+            if (text == "null") { return null; }
+            let j = Json.tryParse(text);
+            if (j == null) { return text; }
+            if (j.isString()) { return j.asString(); }
+            if (j.isInteger()) { return j.asLong(); }
+            if (j.isNumber()) { return j.asFloat(); }
+            return text;
+        }
+    }
+
+    // Features and their resolvers, over a store.
+    class Features {
+        public store: FeatureStore
+        private resolvers: HashMap<string, fn(any) -> any> = new HashMap<string, fn(any) -> any>()
+        private lock: Mutex = new Mutex()
+        constructor(store: FeatureStore = new MemoryFeatureStore()) { self.store = store; }
+
+        // How `feature` is decided for a scope (bool, or a value such as a variant).
+        fn define(feature: string, resolve: fn(any) -> any) {
+            self.lock.lock();
+            self.resolvers.put(feature, resolve);
+            self.lock.unlock();
+        }
+        fn defined() -> Array<string> {
+            self.lock.lock();
+            let out = self.resolvers.keys();
+            self.lock.unlock();
+            out.sortBy(fn(a, b) => Str.compare(a, b));
+            return out;
+        }
+        // The flags for `scope` (null: for everyone).
+        fn forScope(scope: any) -> ScopedFeatures { return new ScopedFeatures(self, scope); }
+        fn valueFor(feature: string, scope: any, key: string) -> any {
+            let stored = self.store.get(feature, key);
+            if (stored != null) { return FeatureValue.decode(stored); }
+            self.lock.lock();
+            let resolve = self.resolvers.getOr(feature, null);
+            self.lock.unlock();
+            if (resolve == null) { return false; }                      // (an unknown feature is off)
+            let v = resolve(scope);
+            self.store.set(feature, key, FeatureValue.encode(v));
+            return v;
+        }
+        // For every scope stored so far, and as the answer for everyone.
+        fn activateForEveryone(feature: string, value: any = true) {
+            let text = FeatureValue.encode(value);
+            self.store.setForAll(feature, text);
+            self.store.set(feature, "", text);
+        }
+        fn deactivateForEveryone(feature: string) { self.activateForEveryone(feature, false); }
+        // Forgets every stored value of `feature` ("" for all features).
+        fn purge(feature: string = "") { self.store.purge(feature); }
+
+        // How a scope is stored: a FeatureScope's id, a string, a number, or a
+        // class and its `id` field; "" for null (everyone). (Two objects must
+        // never share a key by accident, so anything else is a ValueError.)
+        static fn scopeKey(scope: any) -> string {
+            if (scope == null) { return ""; }
+            if (scope is FeatureScope) { return (scope as FeatureScope).featureScopeId(); }
+            if (scope is string) { return scope as string; }
+            if (scope is long || scope is int) { return str(scope); }
+            let info = ClassInfo.of(scope);
+            if (info != null) {
+                let f = info.field("id");
+                if (f != null && f.canGet()) { return info.name + "|" + str(f.get(scope)); }
+            }
+            throw new ValueError("a feature scope must be a string, a number, a FeatureScope, or an object with an `id` field " +
+                                 "that reflection can read (an Orbit model; else name its class in reflect(...)): got " + typename(scope));
+        }
+    }
+
+    // The app's features, as statics.
+    class Feature {
+        private static manager: Features = new Features()
+        static fn use(f: Features) { Feature.manager = f; }
+        static fn useStore(store: FeatureStore) { Feature.manager = new Features(store); }
+        static fn instance() -> Features { return Feature.manager; }
+        static fn define(feature: string, resolve: fn(any) -> any) { Feature.manager.define(feature, resolve); }
+        static fn for(scope: any) -> ScopedFeatures { return Feature.manager.forScope(scope); }
+        // For everyone (the null scope).
+        static fn active(feature: string) -> bool { return Feature.manager.forScope(null).active(feature); }
+        static fn inactive(feature: string) -> bool { return !Feature.active(feature); }
+        static fn value(feature: string) -> any { return Feature.manager.forScope(null).value(feature); }
+        static fn activate(feature: string, value: any = true) { Feature.manager.forScope(null).activate(feature, value); }
+        static fn deactivate(feature: string) { Feature.manager.forScope(null).deactivate(feature); }
+        static fn activateForEveryone(feature: string, value: any = true) { Feature.manager.activateForEveryone(feature, value); }
+        static fn deactivateForEveryone(feature: string) { Feature.manager.deactivateForEveryone(feature); }
+        static fn purge(feature: string = "") { Feature.manager.purge(feature); }
+        static fn defined() -> Array<string> { return Feature.manager.defined(); }
+    }
+
+    // Route middleware: the request's user (or everyone, without one) must have
+    // every one of `features` on; otherwise `status` (404 by default, as if the
+    // route were not there).
+    class EnsureFeature implements Middleware {
+        private features: Array<string>
+        private status: int
+        private manager: Features
+        constructor(feature: string, status: int = 404, manager: Features = null) {
+            self.features = Str.split(feature, ",").map(fn(s: string) => Str.trim(s));
+            self.status = status;
+            self.manager = manager;
+        }
+        fn handle(req: Request, next: fn(Request) -> Response) -> Response {
+            let m = self.manager == null ? Feature.instance() : self.manager;
+            if (!m.forScope(req.user).allAreActive(self.features)) {
+                return Response.json({"message": self.status == 404 ? "Not Found" : "This feature is not available."}, self.status);
+            }
+            return next(req);
+        }
+    }
+}
