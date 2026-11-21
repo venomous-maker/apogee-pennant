@@ -304,14 +304,14 @@ namespace apogee {
             if (!(v == null || (v is bool && !(v as bool)))) { onActive(v); } else if (onInactive != null) { onInactive(); }
         }
         fn activate(feature: string, value: any = true) {
-            self.manager.store.set(feature, self.key, FeatureValue.encode(value));
+            self.manager.write(feature, self.key, FeatureValue.encode(value));
         }
         fn deactivate(feature: string) {
-            self.manager.store.set(feature, self.key, "false");
+            self.manager.write(feature, self.key, "false");
         }
         // Forgets the stored value: the resolver decides again next time.
         fn forget(feature: string) {
-            self.manager.store.delete(feature, self.key);
+            self.manager.forget(feature, self.key);
         }
     }
 
@@ -338,10 +338,26 @@ namespace apogee {
         }
     }
 
+    // A value read or resolved, and until when it is kept (monotonic ms).
+    class CachedFeature {
+        public value: any
+        public until: long
+        constructor(value: any, until: long) {
+            self.value = value
+            self.until = until
+        }
+    }
+
     // Features and their resolvers, over a store.
     class Features {
         public store: FeatureStore
+        // How long (ms) a value read or resolved is kept in this process, so a
+        // check within that time asks the store nothing (0: always ask). Writes
+        // made here drop what they change at once; another process's show
+        // within this time.
+        public cacheMs: long = 1000
         private resolvers: HashMap<string, fn(any) -> any> = new HashMap<string, fn(any) -> any>()
+        private cache: HashMap<string, CachedFeature> = new HashMap<string, CachedFeature>()
         private lock: Mutex = new Mutex()
         constructor(store: FeatureStore = new MemoryFeatureStore()) {
             self.store = store;
@@ -365,28 +381,65 @@ namespace apogee {
             return new ScopedFeatures(self, scope);
         }
         fn valueFor(feature: string, scope: any, key: string) -> any {
+            let ck = feature + "\u{1}" + key;
+            if (self.cacheMs > 0) {
+                self.lock.lock();
+                let c = self.cache.getOr(ck, null);
+                self.lock.unlock();
+                if (c != null && c.until > Time.monotonicMs()) { return c.value; }
+            }
             let stored = self.store.get(feature, key);
-            if (stored != null) { return FeatureValue.decode(stored); }
+            if (stored != null) { return self.remember(ck, FeatureValue.decode(stored)); }
             self.lock.lock();
             let resolve = self.resolvers.getOr(feature, null);
             self.lock.unlock();
             if (resolve == null) { return false; }                      // (an unknown feature is off)
             let v = resolve(scope);
             self.store.set(feature, key, FeatureValue.encode(v));
+            return self.remember(ck, v);
+        }
+        private fn remember(ck: string, v: any) -> any {
+            if (self.cacheMs <= 0) { return v; }
+            self.lock.lock();
+            if (self.cache.size() >= 50000) { self.cache.clear(); }    // (a bound, for many scopes)
+            self.cache.put(ck, new CachedFeature(v, Time.monotonicMs() + self.cacheMs));
+            self.lock.unlock();
             return v;
+        }
+        // Stores `feature`'s value for a scope key (as FeatureValue text).
+        fn write(feature: string, key: string, text: string) {
+            self.store.set(feature, key, text);
+            self.drop(feature + "\u{1}" + key);
+        }
+        fn forget(feature: string, key: string) {
+            self.store.delete(feature, key);
+            self.drop(feature + "\u{1}" + key);
+        }
+        private fn drop(ck: string) {
+            self.lock.lock()
+            self.cache.remove(ck)
+            self.lock.unlock()
+        }
+        // Forgets what this process has kept (the store then answers again).
+        fn flushCache() {
+            self.lock.lock()
+            self.cache.clear()
+            self.lock.unlock()
         }
         // For every scope stored so far, and as the answer for everyone.
         fn activateForEveryone(feature: string, value: any = true) {
             let text = FeatureValue.encode(value);
             self.store.setForAll(feature, text);
             self.store.set(feature, "", text);
+            self.flushCache();
         }
         fn deactivateForEveryone(feature: string) {
             self.activateForEveryone(feature, false);
         }
         // Forgets every stored value of `feature` ("" for all features).
         fn purge(feature: string = "") {
-            self.store.purge(feature);
+            self.store.purge(feature)
+            self.flushCache()
         }
 
         // How a scope is stored: a FeatureScope's id, a string, a number, or a
@@ -449,6 +502,9 @@ namespace apogee {
         }
         static fn purge(feature: string = "") {
             Feature.manager.purge(feature);
+        }
+        static fn flushCache() {
+            Feature.manager.flushCache();
         }
         static fn defined() -> Array<string> {
             return Feature.manager.defined();
