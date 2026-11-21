@@ -12,8 +12,20 @@ use apogee.*
 use db.*
 use cache.*
 
-class User { public id: int  public beta: bool  constructor(id: int, beta: bool) { self.id = id; self.beta = beta } }
-class Team implements FeatureScope { public slug: string  constructor(s: string) { self.slug = s }  fn featureScopeId() -> string { return "team:" + self.slug } }
+class User {
+    public id: int  public beta: bool  constructor(id: int, beta: bool) {
+        self.id = id
+        self.beta = beta
+    }
+}
+class Team implements FeatureScope {
+    public slug: string  constructor(s: string) {
+        self.slug = s
+    }
+    fn featureScopeId() -> string {
+        return "team:" + self.slug
+    }
+}
 
 class Calls { static n: int = 0 }
 class Plain { constructor() {} }
@@ -21,7 +33,10 @@ class Plain { constructor() {} }
 fn exercise(store: FeatureStore) {
     let f = new Features(store)
     Calls.n = 0
-    f.define("new-checkout", fn(scope: any) -> any { Calls.n += 1; return scope != null && (scope as User).beta })
+    f.define("new-checkout", fn(scope: any) -> any {
+        Calls.n += 1
+        return scope != null && (scope as User).beta
+    })
     f.define("button-color", fn(scope: any) -> any { return "blue" })
     let ada = new User(1, true)
     let bo = new User(2, false)
@@ -81,7 +96,10 @@ test "rollouts are stable, and split close to the share asked for" {
     assertEq(Rollout.percent(new User(77, false), "search-v2", 25), Rollout.percent(new User(77, false), "search-v2", 25))
     let colors: Array<string> = ["blue", "green", "orange"]
     let counts = new HashMap<string, int>()
-    for (i in 0..3000) { let c = Rollout.pick(i as long, "color", colors); counts.put(c, counts.getOr(c, 0) + 1) }
+    for (i in 0..3000) {
+        let c = Rollout.pick(i as long, "color", colors)
+        counts.put(c, counts.getOr(c, 0) + 1)
+    }
     for (c in colors) { assert(counts.get(c) > 850 && counts.get(c) < 1150) }
     assert(Rollout.percent("anyone", "x", 100))
     assert(!Rollout.percent("anyone", "x", 0))

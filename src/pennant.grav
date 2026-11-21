@@ -58,7 +58,10 @@ namespace apogee {
         fn set(feature: string, scope: string, valueJson: string) {
             self.lock.lock();
             let m = self.values.getOr(feature, null);
-            if (m == null) { m = new HashMap<string, string>(); self.values.put(feature, m); }
+            if (m == null) {
+                m = new HashMap<string, string>()
+                self.values.put(feature, m)
+            }
             m.put(scope, valueJson);
             self.lock.unlock();
         }
@@ -92,7 +95,10 @@ namespace apogee {
     class DatabaseFeatureStore implements FeatureStore {
         public table: string
         private pool: Pool
-        constructor(pool: Pool, table: string = "features") { self.pool = pool; self.table = table; }
+        constructor(pool: Pool, table: string = "features") {
+            self.pool = pool
+            self.table = table
+        }
         private fn with(f: fn(Connection)) {
             let c = self.pool.acquire();
             try { f(c); } finally { self.pool.release(c); }
@@ -110,7 +116,10 @@ namespace apogee {
             let found = false;
             self.with(fn(c: Connection) {
                 let row = c.queryOne("SELECT value FROM " + self.table + " WHERE name = ? AND scope = ?", [feature, scope]);
-                if (row != null) { found = true; out = row.getString("value"); }
+                if (row != null) {
+                    found = true
+                    out = row.getString("value")
+                }
             });
             return found ? out : null;
         }
@@ -147,8 +156,13 @@ namespace apogee {
         public prefix: string
         private store: CacheStore
         private lock: Mutex = new Mutex()
-        constructor(store: CacheStore, prefix: string = "features:") { self.store = store; self.prefix = prefix; }
-        private fn key(feature: string, scope: string) -> string { return self.prefix + feature + "|" + scope; }
+        constructor(store: CacheStore, prefix: string = "features:") {
+            self.store = store
+            self.prefix = prefix
+        }
+        private fn key(feature: string, scope: string) -> string {
+            return self.prefix + feature + "|" + scope;
+        }
         private fn scopes(feature: string) -> Array<string> {
             let raw = self.store.get(self.prefix + "scopes|" + feature);
             let out = new Array<string>();
@@ -162,7 +176,10 @@ namespace apogee {
             for (s in scopes) { a.push(s); }
             self.store.forever(self.prefix + "scopes|" + feature, a.toJson());
             let all = self.features();
-            if (!all.contains(feature)) { all.push(feature); self.saveFeatures(all); }
+            if (!all.contains(feature)) {
+                all.push(feature)
+                self.saveFeatures(all)
+            }
         }
         private fn features() -> Array<string> {
             let raw = self.store.get(self.prefix + "all");
@@ -176,12 +193,17 @@ namespace apogee {
             for (s in all) { a.push(s); }
             self.store.forever(self.prefix + "all", a.toJson());
         }
-        fn get(feature: string, scope: string) -> string? { return self.store.get(self.key(feature, scope)); }
+        fn get(feature: string, scope: string) -> string? {
+            return self.store.get(self.key(feature, scope));
+        }
         fn set(feature: string, scope: string, valueJson: string) {
             self.lock.lock();
             self.store.forever(self.key(feature, scope), valueJson);
             let s = self.scopes(feature);
-            if (!s.contains(scope)) { s.push(scope); self.saveScopes(feature, s); }
+            if (!s.contains(scope)) {
+                s.push(scope)
+                self.saveScopes(feature, s)
+            }
             self.lock.unlock();
         }
         fn setForAll(feature: string, valueJson: string) {
@@ -194,7 +216,10 @@ namespace apogee {
             self.store.forget(self.key(feature, scope));
             let s = self.scopes(feature);
             let i = s.indexOf(scope);
-            if (i >= 0) { s.removeAt(i); self.saveScopes(feature, s); }
+            if (i >= 0) {
+                s.removeAt(i)
+                self.saveScopes(feature, s)
+            }
             self.lock.unlock();
         }
         fn purge(feature: string) {
@@ -239,15 +264,34 @@ namespace apogee {
         private manager: Features
         private scope: any
         private key: string
-        constructor(manager: Features, scope: any) { self.manager = manager; self.scope = scope; self.key = Features.scopeKey(scope); }
+        constructor(manager: Features, scope: any) {
+            self.manager = manager
+            self.scope = scope
+            self.key = Features.scopeKey(scope)
+        }
         // The feature's value for this scope (resolved and stored the first time).
-        fn value(feature: string) -> any { return self.manager.valueFor(feature, self.scope, self.key); }
+        fn value(feature: string) -> any {
+            return self.manager.valueFor(feature, self.scope, self.key);
+        }
         // Whether the value is anything but false or null.
-        fn active(feature: string) -> bool { let v = self.value(feature); return !(v == null || (v is bool && !(v as bool))); }
-        fn inactive(feature: string) -> bool { return !self.active(feature); }
-        fn allAreActive(features: Array<string>) -> bool { for (f in features) { if (!self.active(f)) { return false; } } return true; }
-        fn someAreActive(features: Array<string>) -> bool { for (f in features) { if (self.active(f)) { return true; } } return false; }
-        fn allAreInactive(features: Array<string>) -> bool { return !self.someAreActive(features); }
+        fn active(feature: string) -> bool {
+            let v = self.value(feature)
+            return !(v == null || (v is bool && !(v as bool)))
+        }
+        fn inactive(feature: string) -> bool {
+            return !self.active(feature);
+        }
+        fn allAreActive(features: Array<string>) -> bool {
+            for (f in features) { if (!self.active(f)) { return false; } }
+            return true;
+        }
+        fn someAreActive(features: Array<string>) -> bool {
+            for (f in features) { if (self.active(f)) { return true; } }
+            return false;
+        }
+        fn allAreInactive(features: Array<string>) -> bool {
+            return !self.someAreActive(features);
+        }
         // Each feature's value.
         fn values(features: Array<string>) -> HashMap<string, any> {
             let out = new HashMap<string, any>();
@@ -259,10 +303,16 @@ namespace apogee {
             let v = self.value(feature);
             if (!(v == null || (v is bool && !(v as bool)))) { onActive(v); } else if (onInactive != null) { onInactive(); }
         }
-        fn activate(feature: string, value: any = true) { self.manager.store.set(feature, self.key, FeatureValue.encode(value)); }
-        fn deactivate(feature: string) { self.manager.store.set(feature, self.key, "false"); }
+        fn activate(feature: string, value: any = true) {
+            self.manager.store.set(feature, self.key, FeatureValue.encode(value));
+        }
+        fn deactivate(feature: string) {
+            self.manager.store.set(feature, self.key, "false");
+        }
         // Forgets the stored value: the resolver decides again next time.
-        fn forget(feature: string) { self.manager.store.delete(feature, self.key); }
+        fn forget(feature: string) {
+            self.manager.store.delete(feature, self.key);
+        }
     }
 
     // Values as JSON text: bool, numbers, strings, null.
@@ -293,7 +343,9 @@ namespace apogee {
         public store: FeatureStore
         private resolvers: HashMap<string, fn(any) -> any> = new HashMap<string, fn(any) -> any>()
         private lock: Mutex = new Mutex()
-        constructor(store: FeatureStore = new MemoryFeatureStore()) { self.store = store; }
+        constructor(store: FeatureStore = new MemoryFeatureStore()) {
+            self.store = store;
+        }
 
         // How `feature` is decided for a scope (bool, or a value such as a variant).
         fn define(feature: string, resolve: fn(any) -> any) {
@@ -309,7 +361,9 @@ namespace apogee {
             return out;
         }
         // The flags for `scope` (null: for everyone).
-        fn forScope(scope: any) -> ScopedFeatures { return new ScopedFeatures(self, scope); }
+        fn forScope(scope: any) -> ScopedFeatures {
+            return new ScopedFeatures(self, scope);
+        }
         fn valueFor(feature: string, scope: any, key: string) -> any {
             let stored = self.store.get(feature, key);
             if (stored != null) { return FeatureValue.decode(stored); }
@@ -327,9 +381,13 @@ namespace apogee {
             self.store.setForAll(feature, text);
             self.store.set(feature, "", text);
         }
-        fn deactivateForEveryone(feature: string) { self.activateForEveryone(feature, false); }
+        fn deactivateForEveryone(feature: string) {
+            self.activateForEveryone(feature, false);
+        }
         // Forgets every stored value of `feature` ("" for all features).
-        fn purge(feature: string = "") { self.store.purge(feature); }
+        fn purge(feature: string = "") {
+            self.store.purge(feature);
+        }
 
         // How a scope is stored: a FeatureScope's id, a string, a number, or a
         // class and its `id` field; "" for null (everyone). (Two objects must
@@ -352,21 +410,49 @@ namespace apogee {
     // The app's features, as statics.
     class Feature {
         private static manager: Features = new Features()
-        static fn use(f: Features) { Feature.manager = f; }
-        static fn useStore(store: FeatureStore) { Feature.manager = new Features(store); }
-        static fn instance() -> Features { return Feature.manager; }
-        static fn define(feature: string, resolve: fn(any) -> any) { Feature.manager.define(feature, resolve); }
-        static fn for(scope: any) -> ScopedFeatures { return Feature.manager.forScope(scope); }
+        static fn use(f: Features) {
+            Feature.manager = f;
+        }
+        static fn useStore(store: FeatureStore) {
+            Feature.manager = new Features(store);
+        }
+        static fn instance() -> Features {
+            return Feature.manager;
+        }
+        static fn define(feature: string, resolve: fn(any) -> any) {
+            Feature.manager.define(feature, resolve);
+        }
+        static fn for(scope: any) -> ScopedFeatures {
+            return Feature.manager.forScope(scope);
+        }
         // For everyone (the null scope).
-        static fn active(feature: string) -> bool { return Feature.manager.forScope(null).active(feature); }
-        static fn inactive(feature: string) -> bool { return !Feature.active(feature); }
-        static fn value(feature: string) -> any { return Feature.manager.forScope(null).value(feature); }
-        static fn activate(feature: string, value: any = true) { Feature.manager.forScope(null).activate(feature, value); }
-        static fn deactivate(feature: string) { Feature.manager.forScope(null).deactivate(feature); }
-        static fn activateForEveryone(feature: string, value: any = true) { Feature.manager.activateForEveryone(feature, value); }
-        static fn deactivateForEveryone(feature: string) { Feature.manager.deactivateForEveryone(feature); }
-        static fn purge(feature: string = "") { Feature.manager.purge(feature); }
-        static fn defined() -> Array<string> { return Feature.manager.defined(); }
+        static fn active(feature: string) -> bool {
+            return Feature.manager.forScope(null).active(feature);
+        }
+        static fn inactive(feature: string) -> bool {
+            return !Feature.active(feature);
+        }
+        static fn value(feature: string) -> any {
+            return Feature.manager.forScope(null).value(feature);
+        }
+        static fn activate(feature: string, value: any = true) {
+            Feature.manager.forScope(null).activate(feature, value);
+        }
+        static fn deactivate(feature: string) {
+            Feature.manager.forScope(null).deactivate(feature);
+        }
+        static fn activateForEveryone(feature: string, value: any = true) {
+            Feature.manager.activateForEveryone(feature, value);
+        }
+        static fn deactivateForEveryone(feature: string) {
+            Feature.manager.deactivateForEveryone(feature);
+        }
+        static fn purge(feature: string = "") {
+            Feature.manager.purge(feature);
+        }
+        static fn defined() -> Array<string> {
+            return Feature.manager.defined();
+        }
     }
 
     // Route middleware: the request's user (or everyone, without one) must have
