@@ -133,3 +133,29 @@ test "the facade and the middleware" {
     assertEq(new EnsureFeature("beta-page", 403).handle(other, ok).http.status, 403)
     assertEq(Str.join(Feature.defined(), ","), "beta-page")
 }
+
+test "values are kept a moment; writes made here show at once" {
+    let store = new MemoryFeatureStore()
+    let f = new Features(store)
+    f.cacheMs = 200
+    let calls = 0
+    f.define("beta", fn(scope: any) -> any {
+        calls += 1
+        return false
+    })
+    let ada = f.forScope("ada")
+    assert(ada.inactive("beta"))
+    assert(ada.inactive("beta"))
+    assertEq(calls, 1)
+    ada.activate("beta")                                     // through here: at once
+    assert(ada.active("beta"))
+    store.set("beta", "ada", "false")                         // as another process would
+    assert(ada.active("beta"))                                // (kept for now)
+    Time.sleepMs(250)
+    assert(ada.inactive("beta"))
+    f.activateForEveryone("beta")
+    assert(ada.active("beta"))
+    f.cacheMs = 0
+    store.set("beta", "ada", "false")
+    assert(ada.inactive("beta"))
+}
