@@ -6,6 +6,8 @@ compiler versions it builds with.
 
 ## Unreleased
 
+## 0.1.1 (2026-11-21)
+
 - Values read or resolved are kept in the process for `cacheMs` (1 s by
   default): a repeated check asks the store nothing (about 50 times faster on
   SQLite, more over a network). Changes made through Pennant show at once;
