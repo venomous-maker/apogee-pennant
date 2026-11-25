@@ -1,0 +1,29 @@
+// package.grav — how apogee-pennant connects itself to an app (apogee-package):
+// features.store is database (the features table: CreateFeaturesTable), cache
+// or memory; the feature: middleware.
+import "std"
+import "apogee-config"
+import "apogee-package"
+import "apogee-http"
+import "apogee-routing"
+import "grav-cache"
+import "pennant.grav"
+import "migration.grav"
+use cache.*
+
+namespace apogee {
+
+    class PennantPackage extends ApogeePackage {
+        constructor() {}
+        fn name() -> string { return "features"; }
+        fn defaults() -> HashMap<string, any> { return {"features.store": Env.get("FEATURES_STORE", "database")}; }
+        fn migrations() -> Array<any> { return [new CreateFeaturesTable() as any]; }
+        fn boot(app: PackageContext) {
+            let store = Config.getString("features.store", "database");
+            if (store == "database") { Feature.useStore(new DatabaseFeatureStore(app.storePool())); }
+            else if (store == "cache") { Feature.useStore(new CacheFeatureStore(app.make::<CacheRepository>().store)); }
+            else { Feature.useStore(new MemoryFeatureStore()); }
+            app.make::<Router>().aliasMiddleware("feature", fn(a: Array<string>) -> Middleware { return new EnsureFeature(Str.join(a, ",")); });
+        }
+    }
+}
