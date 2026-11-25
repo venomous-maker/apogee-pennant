@@ -352,7 +352,9 @@ namespace apogee {
         // within this time.
         public cacheMs: long = 1000
         private resolvers: HashMap<string, fn(any) -> any> = new HashMap<string, fn(any) -> any>()
-        private cache: HashMap<string, CachedFeature> = new HashMap<string, CachedFeature>()
+        // (values kept: at most 50,000, the least recently read going first; sharded, so
+        // threads checking flags seldom wait for each other)
+        private cache: LruCache<string, CachedFeature> = new LruCache<string, CachedFeature>(50000)
         private lock: Mutex = new Mutex()
         constructor(store: FeatureStore = new MemoryFeatureStore()) {
             self.store = store;
@@ -378,10 +380,8 @@ namespace apogee {
         fn valueFor(feature: string, scope: any, key: string) -> any {
             let ck = feature + "\u{1}" + key;
             if (self.cacheMs > 0) {
-                self.lock.lock();
                 let c = self.cache.getOr(ck, null);
-                self.lock.unlock();
-                if (c != null && c.until > Time.monotonicMs()) { return c.value; }
+                if (c != null) { return c.value; }
             }
             let stored = self.store.get(feature, key);
             if (stored != null) { return self.remember(ck, FeatureValue.decode(stored)); }
@@ -394,11 +394,7 @@ namespace apogee {
             return self.remember(ck, v);
         }
         private fn remember(ck: string, v: any) -> any {
-            if (self.cacheMs <= 0) { return v; }
-            self.lock.lock();
-            if (self.cache.size() >= 50000) { self.cache.clear(); }    // (a bound, for many scopes)
-            self.cache.put(ck, new CachedFeature(v, Time.monotonicMs() + self.cacheMs));
-            self.lock.unlock();
+            if (self.cacheMs > 0) { self.cache.putFor(ck, new CachedFeature(v, 0), self.cacheMs); }
             return v;
         }
         // Stores `feature`'s value for a scope key (as FeatureValue text).
@@ -410,17 +406,9 @@ namespace apogee {
             self.store.delete(feature, key);
             self.drop(feature + "\u{1}" + key);
         }
-        private fn drop(ck: string) {
-            self.lock.lock()
-            self.cache.remove(ck)
-            self.lock.unlock()
-        }
+        private fn drop(ck: string) { self.cache.remove(ck) }
         // Forgets what this process has kept (the store then answers again).
-        fn flushCache() {
-            self.lock.lock()
-            self.cache.clear()
-            self.lock.unlock()
-        }
+        fn flushCache() { self.cache.clear() }
         // For every scope stored so far, and as the answer for everyone.
         fn activateForEveryone(feature: string, value: any = true) {
             let text = FeatureValue.encode(value);
