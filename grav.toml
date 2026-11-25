@@ -1,9 +1,14 @@
 name = "apogee-pennant"
-lib = "src/pennant.grav"
-grav = ">=1.10.1"
+lib = "src/all.grav"
+grav = ">=1.12.0"
 paths = ["src"]
 
 [dependencies]
+apogee-container = "github.com/venomous-maker/apogee-container@v0.2.0"
+apogee-package = { path = "/home/venom/CLionProjects/Practice/apogee-package" }
+apogee-config = "github.com/venomous-maker/apogee-config@v0.2.0"
+apogee-routing = "github.com/venomous-maker/apogee-routing@v0.2.0"
+grav-orbit = "github.com/venomous-maker/grav-orbit@v0.2.0"
 apogee-http = "github.com/venomous-maker/apogee-http@v0.2.0"
 grav-db = "github.com/venomous-maker/grav-db@v0.2.0"
 grav-cache = "github.com/venomous-maker/grav-cache@v0.2.1"
