@@ -1,0 +1,31 @@
+// PennantPackage: the features table from its migration, the database store, the feature: middleware.
+import "std"
+import "apogee-container"
+import "apogee-package"
+import "apogee-http"
+import "apogee-routing"
+import "grav-db"
+import "grav-orbit"
+import "../src/all.grav"
+use apogee.*
+use db.*
+use orbit.*
+
+test "the package connects itself" {
+    let file = Dir.temp() + "/pennant_pkg_" + str(Process.pid()) + ".sqlite"
+    new File(file).delete()
+    DB.connect(Sqlite.open(file))
+    let ps = Packages.discover()
+    assertEq(ps[0].name(), "features")
+    Packages.applyDefaults(ps)
+    for (m in ps[0].migrations()) { (m as Migration).up() }
+    let c = new Container()
+    c.instance::<Router>(new Router(c))
+    let ctx = new PackageContext(c, "testing", "")
+    ctx.poolFn = fn() -> Pool { return new Pool(1, fn() -> Connection { return Sqlite.open(file) as Connection }) }
+    ps[0].boot(ctx)
+    Feature.activate("beta")
+    assert(Feature.active("beta"))
+    assertEq(DB.connection().queryValue("SELECT COUNT(*) FROM features", []) as long, 1 as long)
+    new File(file).delete()
+}
