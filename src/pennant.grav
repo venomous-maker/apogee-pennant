@@ -19,6 +19,7 @@ import "std"
 import "grav-db"
 import "grav-cache"
 import "apogee-http"
+import "migration.grav"
 use db.*
 use cache.*
 
@@ -103,14 +104,8 @@ namespace apogee {
             let c = self.pool.acquire();
             try { f(c); } finally { self.pool.release(c); }
         }
-        // Makes the table (nothing if it is there).
-        fn createTable() {
-            self.with(fn(c: Connection) {
-                let text = c.driver() == "mysql" ? "LONGTEXT" : "TEXT";
-                c.exec("CREATE TABLE IF NOT EXISTS " + self.table + " (name VARCHAR(191) NOT NULL, scope VARCHAR(191) NOT NULL, value " + text +
-                       " NOT NULL, updated_at BIGINT NOT NULL, PRIMARY KEY (name, scope))");
-            });
-        }
+        // Makes the table (nothing if it is there); in an app, `migrate` does (CreateFeaturesTable).
+        fn createTable() { self.with(fn(c: Connection) { CreateFeaturesTable.ensure(c, self.table); }); }
         fn get(feature: string, scope: string) -> string? {
             let out = "";
             let found = false;

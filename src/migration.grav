@@ -1,0 +1,29 @@
+// migration.grav — the features table (name, scope, value, updated_at), as a
+// migration for `migrate`; DatabaseFeatureStore.createTable() makes the same.
+import "std"
+import "grav-db"
+import "grav-orbit"
+use db.*
+use orbit.*
+
+namespace apogee {
+
+    class CreateFeaturesTable extends Migration {
+        public table: string
+        constructor(table: string = "features") { self.table = table; }
+        fn name() -> string { return "CreateFeaturesTable"; }
+        static fn define(t: Blueprint) {
+            t.varchar("name", 191);
+            t.varchar("scope", 191);
+            t.longText("value");
+            t.bigInteger("updated_at");
+            t.primary(["name", "scope"]);
+        }
+        fn up() { Schema.create(self.table, fn(t: Blueprint) { CreateFeaturesTable.define(t); }); }
+        fn down() { Schema.dropIfExists(self.table); }
+        // Makes the table on `c` unless it is there.
+        static fn ensure(c: Connection, table: string) {
+            if (!Schema.hasTableOn(c, table)) { Schema.createOn(c, table, fn(t: Blueprint) { CreateFeaturesTable.define(t); }); }
+        }
+    }
+}
