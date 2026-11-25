@@ -5,7 +5,7 @@ feature is on, for whom, and with which value. A feature is a resolver that
 decides for a scope (a user, a team, everyone) the first time it is asked; the
 answer is stored, so it stays the same until it is changed on purpose.
 
-```grav
+```typescript
 import "std"
 import "apogee-pennant"
 use apogee.*
