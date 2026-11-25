@@ -6,6 +6,13 @@ compiler versions it builds with.
 
 ## Unreleased
 
+Needs grav 1.12.0 or newer.
+
+- `PennantPackage`: the module connects itself to an apogee-framework app (apogee-package):
+  its settings, wiring moved here from the framework.
+- Its tables as a migration (`CreateFeaturesTable`, run by `migrate`); the store's own
+  table-making method uses the same definition.
+
 ## 0.1.1 (2026-11-21)
 
 - Values read or resolved are kept in the process for `cacheMs` (1 s by
