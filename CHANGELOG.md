@@ -8,6 +8,8 @@ compiler versions it builds with.
 
 Needs grav 1.12.0 or newer.
 
+- Values kept a moment in a sharded, bounded LruCache (no lock shared by every
+  check); needs grav 1.13.0 or newer.
 - `PennantPackage`: the module connects itself to an apogee-framework app (apogee-package):
   its settings, wiring moved here from the framework.
 - Its tables as a migration (`CreateFeaturesTable`, run by `migrate`); the store's own
