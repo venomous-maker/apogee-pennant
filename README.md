@@ -21,6 +21,20 @@ router.aliasMiddleware("feature", fn(a: Array<string>) -> Middleware { return ne
 router.get("/checkout", ...).middleware(["feature:new-checkout"])
 ```
 
+## In an apogee-framework app
+
+Importing the module is all it takes: `PennantPackage` (apogee-package) connects it when
+the app is created. The store comes from `features.store`, and the `feature:` middleware is registered (`->middleware(["feature:new-checkout"])`).
+
+**Migration:** `CreateFeaturesTable` makes the `features` table. Run `migrate` after adding the module.
+
+| Setting | Default |
+|---|---|
+| `features.store` | `FEATURES_STORE`: `database` (default), `cache` (the app's cache store) or `memory` |
+| `features.enabled` | on; `false` leaves the module out |
+
+Your own configuration wins over these defaults.
+
 ## Checking
 
 `Feature.for(scope)` gives a scope's flags: `active(f)`, `inactive(f)`,
@@ -54,7 +68,7 @@ before anything is stored, and each feature splits scopes differently.
 | | |
 |---|---|
 | `MemoryFeatureStore` | one process (the default) |
-| `DatabaseFeatureStore(pool, table = "features")` | SQLite, MySQL or PostgreSQL through grav-db; `createTable()` |
+| `DatabaseFeatureStore(pool, table = "features")` | SQLite, MySQL or PostgreSQL through grav-db; `createTable()` (in an app: `CreateFeaturesTable`) |
 | `CacheFeatureStore(cacheStore, prefix = "features:")` | any grav-cache store: Redis, files, a database, memory |
 
 `Feature.useStore(store)` picks one; `Features` is the manager behind the facade.
@@ -78,4 +92,5 @@ otherwise 404, as if the route were not there (or the status given).
 
 ```bash
 grav test tests/pennant.grav
+grav test tests/package.grav
 ```
